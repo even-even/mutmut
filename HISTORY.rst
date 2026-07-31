@@ -1,10 +1,16 @@
 Changelog
 ---------
 
-Unreleased
-~~~~~~~~~~
+3.7.0
+~~~~~
 
 * Fix the trampoline dropping a generator's return value, so ``yield from`` on a mutated generator no longer yields ``None`` instead of its result
+
+* Fix async generators, so that `aclose()`/`athrow()` are handled by the `except`/`finally` blocks of the mutated function instead of being swallowed by the trampoline
+
+* Fix `max_stack_depth` when a test changes the working directory (for example via a tmpdir fixture)
+
+* Fix `type_check_command` reporting type errors in copied files that have no mutants
 
 * Per-function source hashing for incremental cache invalidation — only re-test mutants in functions that changed
 
