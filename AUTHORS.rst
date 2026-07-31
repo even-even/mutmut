@@ -28,3 +28,6 @@ Credits
 * A_A
 * Luzin Boris <borisluzin2004@gmail.com>
 * Nick Lafleur <nick.lafleur@hotmail.com>
+* Tejas Amle <tejas.amle71@gmail.com>
+* Eli Fine <eli88fine@gmail.com>
+* Sanjay Santhanam
