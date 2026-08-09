@@ -5,6 +5,7 @@ import hashlib
 from collections import defaultdict
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -99,9 +100,16 @@ class MutatedFile:
     hash_by_function_name: Mapping[str, str]
 
 
-def mutate_file_contents(filename: str, code: str, covered_lines: set[int] | None = None) -> MutatedFile:
+def mutate_file_contents(
+    filename: str,
+    code: str,
+    covered_lines: set[int] | None = None,
+    coverage_excluded_lines: set[int] | None = None,
+) -> MutatedFile:
     """Create mutations for `code` and merge them to a single mutated file with trampolines."""
-    module, mutations, ignored_classes, ignored_functions = create_mutations(filename, code, covered_lines)
+    module, mutations, ignored_classes, ignored_functions = create_mutations(
+        filename, code, covered_lines, coverage_excluded_lines
+    )
 
     mutated_file = combine_mutations_to_source(module, mutations, ignored_classes, ignored_functions)
 
@@ -109,18 +117,23 @@ def mutate_file_contents(filename: str, code: str, covered_lines: set[int] | Non
 
 
 def create_mutations(
-    filename: str, code: str, covered_lines: set[int] | None = None
+    filename: str,
+    code: str,
+    covered_lines: set[int] | None = None,
+    coverage_excluded_lines: set[int] | None = None,
 ) -> tuple[cst.Module, list[Mutation], set[str], set[str]]:
     """Parse the code and create mutations.
 
     :param filename: File path forwarded to :class:`PragmaVisitor` for error messages.
     :param code: Python source code to parse and mutate.
     :param covered_lines: If provided, only lines in this set are considered for mutation.
+    :param coverage_excluded_lines: Lines coverage.py excludes from measurement. The
+        statements starting on them are ignored, like a `# pragma: no mutate block`.
     :return: A tuple of (module, mutations, ignored_classes, ignored_functions)."""
     module = cst.parse_module(code)
     metadata_wrapper = MetadataWrapper(module)
 
-    ignored_code = get_ignored_lines(filename, code, metadata_wrapper)
+    ignored_code = get_ignored_lines(filename, code, metadata_wrapper, coverage_excluded_lines)
 
     visitor = MutationVisitor(
         mutation_operators,
@@ -199,6 +212,9 @@ class MutationVisitor(cst.CSTVisitor):
         self._covered_lines = covered_lines
         self._ignored_node_lines = ignored_code.ignore_node_lines
         self._ignored_pattern_lines = ignored_code.ignore_pattern_lines
+        self._all_ignored_lines = (
+            ignored_code.no_mutate_lines | ignored_code.ignore_node_lines | ignored_code.ignore_pattern_lines
+        )
         self.ignored_classes: set[str] = set()
         self.ignored_functions: set[str] = set()
 
@@ -216,12 +232,40 @@ class MutationVisitor(cst.CSTVisitor):
         for t, operator in self._operators:
             if isinstance(node, t):
                 for mutated_node in operator(node):
+                    if self._removes_ignored_code(node, mutated_node):
+                        continue
                     mutation = Mutation(
                         original_node=node,
                         mutated_node=mutated_node,
                         contained_by_top_level_function=self.get_metadata(OuterFunctionProvider, node, None),  # type: ignore
                     )
                     self.mutations.append(mutation)
+
+    def _removes_ignored_code(self, node: cst.CSTNode, mutated_node: cst.CSTNode) -> bool:
+        """Does this mutation delete code that we were told not to mutate?
+
+        Some operators mutate by removing a part of a node: a `case` of a `match`, an
+        argument of a call. Such a mutation is anchored on the enclosing node, so the
+        line checks in `_should_mutate_node` never get to see the removed lines."""
+        if not self._all_ignored_lines or not self._spans_ignored_line(node):
+            return False
+
+        kept = {id(child) for child in _walk(mutated_node)}
+        for child in _walk(node):
+            if id(child) in kept:
+                continue
+            position = self.get_metadata(PositionProvider, child, None)
+            if position and position.start.line in self._all_ignored_lines:
+                return True
+
+        return False
+
+    def _spans_ignored_line(self, node: cst.CSTNode) -> bool:
+        position = self.get_metadata(PositionProvider, node, None)
+        if position is None:
+            return True
+
+        return any(line in self._all_ignored_lines for line in range(position.start.line, position.end.line + 1))
 
     def _should_mutate_node(self, node: cst.CSTNode) -> bool:
         # currently, the position metadata does not always exist
@@ -298,6 +342,15 @@ class MutationVisitor(cst.CSTVisitor):
             return True
 
         return False
+
+
+def _walk(node: cst.CSTNode) -> Iterator[cst.CSTNode]:
+    """Yield `node` and every node below it."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(current.children)
 
 
 MODULE_STATEMENT = Union[cst.SimpleStatementLine, cst.BaseCompoundStatement]
