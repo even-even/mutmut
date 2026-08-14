@@ -8,7 +8,7 @@ Unreleased
 
 * Fix mutations that delete ignored code. Dropping a `case` from a `match`, or an argument from a call, is a mutation of the enclosing node, so it used to be made even when the removed lines were themselves ignored
 
-* Support python3.15 and 3.15t
+* Support python3.15
 
 3.7.0
 ~~~~~
